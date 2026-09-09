@@ -6,7 +6,7 @@ import { analyzeScript, renderImage, renderBatch } from "@/lib/manga.functions";
 import { buildTimeline, fmt, scriptEndTime, type Segment } from "@/lib/script";
 import { buildVideo, webCodecsSupported } from "@/lib/video";
 import { isBlankImageUrl } from "@/lib/blank";
-import { loadRun, saveRun } from "@/lib/progress";
+import { loadLatestRun, loadRun, saveRun, type SavedRun } from "@/lib/progress";
 import { colabHealth, normalizeColabUrl, renderOnColab } from "@/lib/colab";
 
 export const Route = createFileRoute("/")({
@@ -66,8 +66,9 @@ const PROMPT_RANGE = 60;
  * sustains 24 concurrent Flux Schnell renders with no rate limiting, so four
  * keys comfortably carry ~96). Auto-throttles if the provider pushes back.
  */
-const IMAGE_CONCURRENCY = 24;
-const IMAGE_BATCH = 4;
+const IMAGE_CONCURRENCY = 4;
+const IMAGE_BATCH = 1;
+const PROMPT_IDLE_TIMEOUT_MS = 45_000;
 /** Panels shown in the preview grid before "show all" (a 2h script has 1000+). */
 const PREVIEW_LIMIT = 60;
 
@@ -129,11 +130,25 @@ type PromptRequest = {
  * requests alive; only the final result event is exposed to the pipeline.
  */
 async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> {
-  const response = await fetch("/api/prompts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify(input),
-  });
+  const controller = new AbortController();
+  let idleTimer = window.setTimeout(() => controller.abort("Prompt stream stopped responding"), PROMPT_IDLE_TIMEOUT_MS);
+  const activity = () => {
+    window.clearTimeout(idleTimer);
+    idleTimer = window.setTimeout(() => controller.abort("Prompt stream stopped responding"), PROMPT_IDLE_TIMEOUT_MS);
+  };
+  let response: Response;
+  try {
+    response = await fetch("/api/prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(input),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    window.clearTimeout(idleTimer);
+    if (controller.signal.aborted) throw new Error("Prompt service stopped responding; this range will retry.");
+    throw error;
+  }
   if (!response.ok) {
     throw new Error((await response.text().catch(() => "")) || `Prompt request failed (${response.status})`);
   }
@@ -159,13 +174,23 @@ async function getPrompts(input: PromptRequest): Promise<{ prompts: string[] }> 
   };
 
   for (;;) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      window.clearTimeout(idleTimer);
+      if (controller.signal.aborted) throw new Error("Prompt service stopped responding; this range will retry.");
+      throw error;
+    }
+    const { value, done } = chunk;
     if (done) break;
+    activity();
     buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
     const frames = buffer.split("\n\n");
     buffer = frames.pop() ?? "";
     frames.forEach(consume);
   }
+  window.clearTimeout(idleTimer);
   if (buffer.trim()) consume(buffer);
   if (failure) throw new Error(failure);
   if (!result) throw new Error("Prompt stream ended before returning prompts");
@@ -204,6 +229,7 @@ function Index() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const shotsRef = useRef<Shot[]>([]);
+  const activeRunRef = useRef<{ key: string; data: SavedRun<Shot> } | null>(null);
   const cancelRef = useRef(false);
   const [retrying, setRetrying] = useState<number[]>([]);
 
@@ -217,6 +243,23 @@ function Index() {
     } catch {
       /* ignore */
     }
+  }, []);
+
+  // Checkpoint as soon as the tab is hidden; mobile browsers may discard it later.
+  useEffect(() => {
+    const flush = () => {
+      const active = activeRunRef.current;
+      if (active) void saveProgress(active.key, active.data);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const doneCount = shots.filter((s) => s.status === "done").length;
@@ -235,14 +278,11 @@ function Index() {
   // length the exported video is forced to match.
   const runtime = useMemo(() => scriptEndTime(script), [script]);
 
-  // offer to resume whatever this exact script produced last time
+  // Offer the latest checkpoint even before the original script is pasted again.
   useEffect(() => {
-    if (script.trim().length < 10) {
-      setCanResume(false);
-      return;
-    }
     let alive = true;
-    void loadSaved(scriptKey(script)).then((saved) => {
+    const lookup = script.trim().length >= 10 ? loadSaved(scriptKey(script)) : loadLatestRun<Shot>().then((x) => x?.run ?? null);
+    void lookup.then((saved) => {
       if (alive) setCanResume(!!saved && saved.shots.length > 0 && shots.length === 0);
     });
     return () => {
@@ -255,42 +295,64 @@ function Index() {
   }, []);
 
   async function resume() {
-    const saved = await loadSaved(scriptKey(script));
+    const exact = script.trim().length >= 10 ? await loadSaved(scriptKey(script)) : null;
+    const latest = exact ? null : await loadLatestRun<Shot>();
+    const saved = exact ?? latest?.run;
     if (!saved) return;
-    setBible(saved.bible);
-    setShots(saved.shots);
-    setPhase("done");
-    setNote(
-      `Restored ${saved.shots.filter((s) => s.status === "done").length}/${saved.shots.length} panels from your last run.`,
+    const resumeScript = saved.script ?? script;
+    if (!resumeScript.trim()) {
+      setError("This older checkpoint needs its original script pasted once before it can continue.");
+      return;
+    }
+    const recovered = saved.shots.map((shot) =>
+      shot.status === "prompting" || shot.status === "drawing"
+        ? { ...shot, status: "waiting" as const, error: undefined }
+        : shot,
     );
+    setScript(resumeScript);
+    setBible(saved.bible);
+    setShots(recovered);
+    setNote(`Continuing ${recovered.filter((s) => s.status === "done").length}/${recovered.length} completed panels…`);
+    await run(recovered, saved.bible, resumeScript);
   }
 
   /* ---------------------------------------------------------------- */
   /* Generation                                                        */
   /* ---------------------------------------------------------------- */
 
-  async function run(existing?: Shot[], existingBible?: string) {
+  async function run(existing?: Shot[], existingBible?: string, sourceScript = script) {
     setError(null);
     setVideoUrl(null);
     setSavedTo(null);
     cancelRef.current = false;
     setPhase("running");
-    const key = scriptKey(script);
+    const key = scriptKey(sourceScript);
+    let b = existingBible ?? "";
+    let list: Shot[] = existing ?? [];
+    let checkpointTimer: ReturnType<typeof setInterval> | undefined;
 
     try {
-      let b = existingBible ?? "";
-      let list: Shot[];
-
       if (existing && existing.length > 0) {
-        list = existing;
+        list = existing.map((shot) =>
+          shot.status === "prompting" || shot.status === "drawing"
+            ? { ...shot, status: "waiting" as const, error: undefined }
+            : shot,
+        );
       } else {
         setNote("Reading script and locking character designs…");
-        const res = await analyze({ data: { script } });
+        const res = await analyze({ data: { script: sourceScript } });
         b = res.bible;
         list = res.segments.map((s) => ({ ...s, status: "waiting" as const }));
       }
       setBible(b);
       setShots(list);
+      const checkpoint = (state: SavedRun<Shot>["state"] = "running") => {
+        const data = { script: sourceScript, bible: b, shots: list, state };
+        activeRunRef.current = { key, data };
+        return saveProgress(key, data);
+      };
+      await checkpoint();
+      checkpointTimer = setInterval(() => void checkpoint(), 4000);
 
       const pending = list.filter((s) => s.status !== "done" || !s.url);
       const total = list.length;
@@ -345,12 +407,9 @@ function Index() {
         patch(index, next);
       };
 
-      let saveTimer = 0;
       const persist = () => {
-        const now = Date.now();
-        if (now - saveTimer < 4000) return;
-        saveTimer = now;
-        void saveProgress(key, { bible: b, shots: list });
+        const data = { script: sourceScript, bible: b, shots: list, state: "running" as const };
+        activeRunRef.current = { key, data };
       };
 
       const allSegments = list.map((s) => ({
@@ -395,6 +454,7 @@ function Index() {
           }
           promptDone += targets.length;
           tick();
+          await checkpoint();
         }
 
         // Repair sweep: one timestamp = one image, in any condition. Any line
@@ -424,6 +484,7 @@ function Index() {
               record(s.index, { prompt: undefined, status: "error", error: "prompt missing" });
             }
             tick();
+            await checkpoint();
           }
         }
       })().then(() => {
@@ -546,7 +607,7 @@ function Index() {
         ...Array.from({ length: IMAGE_CONCURRENCY }, () => worker()),
       ]);
 
-      await saveProgress(key, { bible: b, shots: list });
+      await checkpoint(cancelRef.current ? "stopped" : "done");
       setPhase("done");
       const bad = list.filter((s) => !s.url).length;
       const noPrompt = missingPromptLines(list).length;
@@ -558,8 +619,15 @@ function Index() {
           : "All panels generated · every timestamp has its own prompt.",
       );
     } catch (e) {
+      if (list.length > 0) {
+        const data = { script: sourceScript, bible: b, shots: list, state: "error" as const };
+        activeRunRef.current = { key, data };
+        await saveProgress(key, data);
+      }
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
+    } finally {
+      if (checkpointTimer) clearInterval(checkpointTimer);
     }
   }
 

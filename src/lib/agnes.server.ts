@@ -107,6 +107,8 @@ async function callAgnes(user: string, opts: ChatOptions): Promise<string> {
       try {
       const res = await fetch(API, {
         method: "POST",
+        // This bounds one broken upstream attempt, not the user's workflow.
+        // The caller checkpoints and retries later, so a five-hour run remains unlimited.
         signal: AbortSignal.timeout(opts.timeoutMs ?? 600_000),
         headers: {
           "Content-Type": "application/json",

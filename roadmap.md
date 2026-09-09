@@ -1,5 +1,11 @@
 # Roadmap
 
+- [x] Import story-spark-1682 and store all supplied provider keys as encrypted secrets
+- [x] Add bounded per-request watchdogs so one dead provider call cannot freeze an unlimited run
+- [x] Match image concurrency to the four configured keys and retain automatic retry/key rotation
+- [x] Persist script and run state periodically, after prompt groups, on tab hide, stop, and errors
+- [x] Make Resume last run restore the script and continue interrupted prompts/panels automatically
+
 - [x] Clone storyweaver-sync-aid into this project, store API keys as secrets
 - [x] Remove dark/mysterious tone from prompts, style, sanitizer and video grades
 - [x] Webtoon/manhwa page style, high-detail prompts, max render quality (8 steps, 1344x768)

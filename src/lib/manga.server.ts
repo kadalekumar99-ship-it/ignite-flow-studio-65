@@ -4,6 +4,7 @@ import { textChat } from "./text-engine.server";
 import { verifyPromptForLine } from "./scene-check.server";
 
 const PIXAZO_URL = "https://gateway.pixazo.ai/flux-1-schnell/v1/getData";
+const IMAGE_REQUEST_TIMEOUT_MS = 120_000;
 
 /**
  * Renderer-only art direction. The writing model describes only scene content;
@@ -1132,6 +1133,7 @@ export async function generateImage(
     try {
       const res = await fetch(PIXAZO_URL, {
         method: "POST",
+        signal: AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS),
         headers: {
           "Content-Type": "application/json",
           "Cache-Control": "no-cache",

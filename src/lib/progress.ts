@@ -9,10 +9,17 @@
  * first when it fills up.
  */
 
-export type SavedRun<T> = { bible: string; shots: T[] };
+export type SavedRun<T> = {
+  bible: string;
+  shots: T[];
+  script?: string;
+  state?: "running" | "stopped" | "done" | "error";
+  updatedAt?: number;
+};
 
 const DB_NAME = "sceneweaver-progress";
 const STORE = "runs";
+const LAST_RUN_KEY = "sceneweaver.lastRun";
 
 function openDb(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -76,9 +83,15 @@ function evictLocalRuns(keepKey: string) {
 }
 
 export async function saveRun<T>(key: string, data: SavedRun<T>): Promise<void> {
+  const saved = { ...data, updatedAt: Date.now() };
+  try {
+    localStorage.setItem(LAST_RUN_KEY, key);
+  } catch {
+    /* IndexedDB remains the source of truth. */
+  }
   // Primary: IndexedDB. On success, make sure no stale localStorage copy
   // keeps wasting the small quota.
-  if (await idbSet(key, data)) {
+  if (await idbSet(key, saved)) {
     try {
       localStorage.removeItem(key);
     } catch {
@@ -89,11 +102,23 @@ export async function saveRun<T>(key: string, data: SavedRun<T>): Promise<void> 
   // Fallback: localStorage, evicting older runs first if it is full.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      localStorage.setItem(key, JSON.stringify(data));
+      localStorage.setItem(key, JSON.stringify(saved));
       return;
     } catch {
       evictLocalRuns(key);
     }
+  }
+}
+
+/** Loads the most recently checkpointed run without requiring the script to be pasted again. */
+export async function loadLatestRun<T>(): Promise<{ key: string; run: SavedRun<T> } | null> {
+  try {
+    const key = localStorage.getItem(LAST_RUN_KEY);
+    if (!key) return null;
+    const run = await loadRun<T>(key);
+    return run ? { key, run } : null;
+  } catch {
+    return null;
   }
 }
 
