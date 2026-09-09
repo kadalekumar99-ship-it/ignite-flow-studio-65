@@ -729,7 +729,7 @@ function Index() {
         n++;
         setNote(`Retrying failed panels ${n}/${targets.length} · ${ok} fixed`);
       });
-      await saveProgress(key, { bible, shots: list });
+      await saveProgress(key, { script, bible, shots: list, state: "done" });
       setNote(`Retry finished · ${ok}/${targets.length} panels fixed.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -753,10 +753,10 @@ function Index() {
       const target = list.find((s) => s.index === index);
       if (!target) return;
       await redrawShot(target, record, index + 1);
-      await saveProgress(key, { bible, shots: list });
+      await saveProgress(key, { script, bible, shots: list, state: "done" });
     } catch (e) {
       record(index, { status: "error", error: e instanceof Error ? e.message : String(e) });
-      await saveProgress(key, { bible, shots: list });
+      await saveProgress(key, { script, bible, shots: list, state: "error" });
     } finally {
       setRetrying((prev) => prev.filter((i) => i !== index));
     }
@@ -1065,6 +1065,7 @@ function Index() {
               <button
                 onClick={() => {
                   cancelRef.current = true;
+                  setNote("Stopping safely after current requests · progress is checkpointed");
                 }}
                 className="border-4 border-foreground px-6 py-3 font-display text-lg font-black uppercase"
               >

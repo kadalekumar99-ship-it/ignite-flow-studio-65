@@ -4,7 +4,9 @@ import { textChat } from "./text-engine.server";
 import { verifyPromptForLine } from "./scene-check.server";
 
 const PIXAZO_URL = "https://gateway.pixazo.ai/flux-1-schnell/v1/getData";
-const IMAGE_REQUEST_TIMEOUT_MS = 120_000;
+// A single provider attempt must settle quickly enough for the browser queue to
+// rotate keys and checkpoint. This never limits the total workflow duration.
+const IMAGE_REQUEST_TIMEOUT_MS = 45_000;
 
 /**
  * Renderer-only art direction. The writing model describes only scene content;
@@ -1265,10 +1267,10 @@ export async function renderPanel(
 
   // The prompt as written for this line, retried in full on fresh seeds.
   let refused = false;
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 2; round++) {
     tries++;
     try {
-      const url = await generateImage(prompt, seed + round * 1861, slot + round, bible, 3);
+      const url = await generateImage(prompt, seed + round * 1861, slot + round, bible, 1);
       return { url, prompt, level: 0, tries, rewritten };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1283,10 +1285,10 @@ export async function renderPanel(
   if (refused) {
     const softened = promptVariant(prompt, 1, line);
     if (softened && softened !== prompt) {
-      for (let round = 0; round < 2; round++) {
+      for (let round = 0; round < 1; round++) {
         tries++;
         try {
-          const url = await generateImage(softened, seed + 5471 + round * 977, slot + round, bible, 3);
+          const url = await generateImage(softened, seed + 5471 + round * 977, slot + round, bible, 1);
           return { url, prompt: softened, level: 1, tries, rewritten };
         } catch (e) {
           errors.push(`softened ${round + 1}: ${e instanceof Error ? e.message : String(e)}`);
