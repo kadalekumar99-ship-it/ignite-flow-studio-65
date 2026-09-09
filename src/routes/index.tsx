@@ -82,7 +82,7 @@ function scriptKey(script: string): string {
   return `manga:${script.length}:${h}`;
 }
 
-type Saved = { bible: string; shots: Shot[] };
+type Saved = SavedRun<Shot>;
 
 // Progress lives in IndexedDB (src/lib/progress.ts): a long script's shots +
 // prompts overflow localStorage's ~5MB quota, which is what triggered the
