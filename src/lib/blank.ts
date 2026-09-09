@@ -52,7 +52,14 @@ export async function isBlankImageUrl(url: string): Promise<boolean> {
     if (!res.ok) return true;
     const blob = await res.blob();
     if (blob.size < 4000) return true;
-    const bmp = await createImageBitmap(blob);
+    // Decode straight to the 64x36 analysis size. Decoding hundreds of
+    // full-resolution panels at native size is what exhausts tab memory on a
+    // long run and eventually kills the page.
+    const bmp = await createImageBitmap(blob, {
+      resizeWidth: 64,
+      resizeHeight: 36,
+      resizeQuality: "low",
+    });
     const stats = analyseBitmap(bmp);
     bmp.close();
     return stats.blank;
