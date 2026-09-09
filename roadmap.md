@@ -5,7 +5,7 @@
 - [x] Match image concurrency to the four configured keys and retain automatic retry/key rotation
 - [x] Persist script and run state periodically, after prompt groups, on tab hide, stop, and errors
 - [x] Make Resume last run restore the script and continue interrupted prompts/panels automatically
-- [ ] Verify the uploaded 527-line script starts and resumes on the hosted preview
+- [ ] Verify the uploaded 527-line script starts and resumes on the hosted preview — blocked because the preview redirects external browser checks to Lovable login
 
 - [x] Clone storyweaver-sync-aid into this project, store API keys as secrets
 - [x] Remove dark/mysterious tone from prompts, style, sanitizer and video grades

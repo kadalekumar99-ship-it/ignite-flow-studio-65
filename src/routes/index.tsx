@@ -7,6 +7,7 @@ import { buildTimeline, fmt, scriptEndTime, type Segment } from "@/lib/script";
 import { buildVideo, webCodecsSupported } from "@/lib/video";
 import { isBlankImageUrl } from "@/lib/blank";
 import { loadLatestRun, loadRun, saveRun, type SavedRun } from "@/lib/progress";
+import { recoverInterruptedShots } from "@/lib/run-recovery";
 import { colabHealth, normalizeColabUrl, renderOnColab } from "@/lib/colab";
 
 export const Route = createFileRoute("/")({
@@ -304,11 +305,7 @@ function Index() {
       setError("This older checkpoint needs its original script pasted once before it can continue.");
       return;
     }
-    const recovered = saved.shots.map((shot) =>
-      shot.status === "prompting" || shot.status === "drawing"
-        ? { ...shot, status: "waiting" as const, error: undefined }
-        : shot,
-    );
+    const recovered = recoverInterruptedShots(saved.shots);
     setScript(resumeScript);
     setBible(saved.bible);
     setShots(recovered);
@@ -333,11 +330,7 @@ function Index() {
 
     try {
       if (existing && existing.length > 0) {
-        list = existing.map((shot) =>
-          shot.status === "prompting" || shot.status === "drawing"
-            ? { ...shot, status: "waiting" as const, error: undefined }
-            : shot,
-        );
+        list = recoverInterruptedShots(existing);
       } else {
         setNote("Reading script and locking character designs…");
         const res = await analyze({ data: { script: sourceScript } });
